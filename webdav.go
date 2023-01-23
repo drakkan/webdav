@@ -20,6 +20,7 @@
 package webdav // import "github.com/drakkan/webdav"
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -325,7 +326,12 @@ func (h *Handler) handleGetHeadPost(w http.ResponseWriter, r *http.Request) (sta
 		return http.StatusInternalServerError, err
 	}
 	w.Header().Set("ETag", etag)
-	// Let ServeContent determine the Content-Type header.
+	if ctyper, ok := fi.(ContentTyper); ok {
+		ctype, err := ctyper.ContentType(context.Background())
+		if err == nil && ctype != "" {
+			w.Header().Set("Content-Type", ctype)
+		}
+	}
 	http.ServeContent(w, r, reqPath, fi.ModTime(), f)
 	return 0, nil
 }
