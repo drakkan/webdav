@@ -1,7 +1,13 @@
 # WebDAV
 
-Fork of `golang.org/x/net/webdav` with specific patches for use in SFTPGo, it may not work properly with other implementations.
+Fork of `golang.org/x/net/webdav` + the following patches:
 
-The upstream code is MIT licensed, all the code modified here by me is licensed under the terms of the AGPLv3 and therefore cannot be used in closed source applications.
+- [https://go-review.googlesource.com/c/net/+/285753](https://go-review.googlesource.com/c/net/+/285753)
+- [https://go-review.googlesource.com/c/net/+/285754](https://go-review.googlesource.com/c/net/+/285754)
+- [https://go-review.googlesource.com/c/net/+/286992](https://go-review.googlesource.com/c/net/+/286992)
+
+other modifications are specific for use in SFTPGo, they may not work properly with other implementations.
+
+The upstream code and the above patches are MIT licensed, all the other code modified here by me is licensed under the terms of the AGPLv3 and therefore cannot be used in closed source applications/products.
 
 I grant a license exception for upstream inclusion.
