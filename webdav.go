@@ -773,24 +773,19 @@ func makePropstatResponse(href string, pstats []Propstat) *response {
 }
 
 func handlePropfindError(err error, info os.FileInfo) error {
-	var skipResp error = nil
-	if info != nil && info.IsDir() {
-		skipResp = filepath.SkipDir
-	}
-
 	if errors.Is(err, os.ErrPermission) {
 		// If the server cannot recurse into a directory because it is not allowed,
 		// then there is nothing more to say about it. Just skip sending anything.
-		return skipResp
+		return filepath.SkipDir
 	}
 
 	if errors.Is(err, os.ErrNotExist) {
-		return skipResp
+		return filepath.SkipDir
 	}
 
 	if _, ok := err.(*os.PathError); ok {
 		// If the file is just bad, it couldn't be a proper WebDAV resource. Skip it.
-		return skipResp
+		return filepath.SkipDir
 	}
 
 	// We need to be careful with other errors: there is no way to abort the xml stream
