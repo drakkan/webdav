@@ -778,7 +778,7 @@ func walkFS(ctx context.Context, fs FileSystem, depth int, name string, info os.
 	// This implementation is based on Walk's code in the standard path/filepath package.
 	err := walkFn(name, info, nil)
 	if err != nil {
-		if info.IsDir() && err == filepath.SkipDir {
+		if err == filepath.SkipDir {
 			return nil
 		}
 		return err
@@ -805,7 +805,7 @@ func walkFS(ctx context.Context, fs FileSystem, depth int, name string, info os.
 		filename := path.Join(name, fileInfo.Name())
 		err = walkFS(ctx, fs, depth, filename, fileInfo, walkFn)
 		if err != nil {
-			if !fileInfo.IsDir() || err != filepath.SkipDir {
+			if err != filepath.SkipDir {
 				return err
 			}
 		}
