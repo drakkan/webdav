@@ -21,6 +21,7 @@ package webdav
 import (
 	"context"
 	"encoding/xml"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -67,6 +68,18 @@ type FileSystem interface {
 type File interface {
 	http.File
 	io.Writer
+}
+
+// DirLister defines the interface for listing directory contents in chunks.
+type DirLister interface {
+	Next(limit int) ([]os.FileInfo, error)
+	Close() error
+}
+
+// FileDirLister is a File that implements the ReadDir method.
+type FileDirLister interface {
+	File
+	ReadDir() (DirLister, error)
 }
 
 // A Dir implements FileSystem using the native file system restricted to a
@@ -724,22 +737,50 @@ func copyFiles(ctx context.Context, fs FileSystem, src, dst string, overwrite bo
 			return http.StatusForbidden, err
 		}
 		if depth == infiniteDepth {
-			children, err := srcFile.Readdir(-1)
-			if err != nil {
-				return http.StatusForbidden, err
-			}
-			for _, c := range children {
-				name := c.Name()
-				s := path.Join(src, name)
-				d := path.Join(dst, name)
-				cStatus, cErr := copyFiles(ctx, fs, s, d, overwrite, depth, recursion)
-				if cErr != nil {
-					// TODO: MultiStatus.
-					return cStatus, cErr
+			if fileLister, ok := srcFile.(FileDirLister); ok {
+				lister, err := fileLister.ReadDir()
+				if err != nil {
+					return http.StatusForbidden, err
+				}
+				defer lister.Close()
+
+				for {
+					children, err := lister.Next(1000)
+					finished := errors.Is(err, io.EOF)
+					if err != nil && !finished {
+						return http.StatusForbidden, err
+					}
+					for _, c := range children {
+						name := c.Name()
+						s := path.Join(src, name)
+						d := path.Join(dst, name)
+						cStatus, cErr := copyFiles(ctx, fs, s, d, overwrite, depth, recursion)
+						if cErr != nil {
+							// TODO: MultiStatus.
+							return cStatus, cErr
+						}
+					}
+					if finished {
+						break
+					}
+				}
+			} else {
+				children, err := srcFile.Readdir(-1)
+				if err != nil {
+					return http.StatusForbidden, err
+				}
+				for _, c := range children {
+					name := c.Name()
+					s := path.Join(src, name)
+					d := path.Join(dst, name)
+					cStatus, cErr := copyFiles(ctx, fs, s, d, overwrite, depth, recursion)
+					if cErr != nil {
+						// TODO: MultiStatus.
+						return cStatus, cErr
+					}
 				}
 			}
 		}
-
 	} else {
 		dstFile, err := fs.OpenFile(ctx, dst, os.O_RDWR|os.O_CREATE|os.O_TRUNC, srcPerm)
 		if err != nil {
@@ -795,6 +836,34 @@ func walkFS(ctx context.Context, fs FileSystem, depth int, name string, info os.
 	if err != nil {
 		return walkFn(name, info, err)
 	}
+	if fileLister, ok := f.(FileDirLister); ok {
+		lister, err := fileLister.ReadDir()
+		if err != nil {
+			return walkFn(name, info, err)
+		}
+		defer lister.Close()
+
+		for {
+			batch, err := lister.Next(1000)
+			finished := errors.Is(err, io.EOF)
+			if err != nil && !finished {
+				return walkFn(name, info, err)
+			}
+			for _, fileInfo := range batch {
+				filename := path.Join(name, fileInfo.Name())
+				err = walkFS(ctx, fs, depth, filename, fileInfo, walkFn)
+				if err != nil {
+					if err != filepath.SkipDir {
+						return err
+					}
+				}
+			}
+			if finished {
+				return nil
+			}
+		}
+	}
+
 	fileInfos, err := f.Readdir(0)
 	f.Close()
 	if err != nil {
