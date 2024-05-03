@@ -228,7 +228,7 @@ func props(ctx context.Context, fs FileSystem, ls LockSystem, name string, pname
 }
 
 // propnames returns the property names defined for resource name.
-func propnames(ctx context.Context, fs FileSystem, ls LockSystem, name string, fi os.FileInfo) ([]xml.Name, error) {
+func propnames(ctx context.Context, fs FileSystem, _ LockSystem, name string, fi os.FileInfo) ([]xml.Name, error) {
 	if fi == nil {
 		var err error
 		fi, err = fs.Stat(ctx, name)
@@ -286,7 +286,7 @@ func allprop(ctx context.Context, fs FileSystem, ls LockSystem, name string, inc
 
 // patch patches the properties of resource name. The return values are
 // constrained in the same manner as DeadPropsHolder.Patch.
-func patch(ctx context.Context, fs FileSystem, ls LockSystem, name string, patches []Proppatch) ([]Propstat, error) {
+func patch(ctx context.Context, fs FileSystem, _ LockSystem, name string, patches []Proppatch) ([]Propstat, error) {
 	conflict := false
 loop:
 	for _, patch := range patches {

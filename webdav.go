@@ -336,7 +336,7 @@ func (h *Handler) handleGetHeadPost(w http.ResponseWriter, r *http.Request) (sta
 	return 0, nil
 }
 
-func (h *Handler) handleDelete(w http.ResponseWriter, r *http.Request) (status int, err error) {
+func (h *Handler) handleDelete(_ http.ResponseWriter, r *http.Request) (status int, err error) {
 	reqPath, status, err := h.stripPrefix(r.URL.Path)
 	if err != nil {
 		return status, err
@@ -385,6 +385,9 @@ func (h *Handler) handlePut(w http.ResponseWriter, r *http.Request) (status int,
 		if os.IsPermission(err) {
 			return http.StatusForbidden, err
 		}
+		if os.IsNotExist(err) {
+			return http.StatusConflict, err
+		}
 		return http.StatusNotFound, err
 	}
 	_, copyErr := io.Copy(f, r.Body)
@@ -408,7 +411,7 @@ func (h *Handler) handlePut(w http.ResponseWriter, r *http.Request) (status int,
 	return http.StatusCreated, nil
 }
 
-func (h *Handler) handleMkcol(w http.ResponseWriter, r *http.Request) (status int, err error) {
+func (h *Handler) handleMkcol(_ http.ResponseWriter, r *http.Request) (status int, err error) {
 	reqPath, status, err := h.stripPrefix(r.URL.Path)
 	if err != nil {
 		return status, err
@@ -435,7 +438,7 @@ func (h *Handler) handleMkcol(w http.ResponseWriter, r *http.Request) (status in
 	return http.StatusCreated, nil
 }
 
-func (h *Handler) handleCopyMove(w http.ResponseWriter, r *http.Request) (status int, err error) {
+func (h *Handler) handleCopyMove(_ http.ResponseWriter, r *http.Request) (status int, err error) {
 	hdr := r.Header.Get("Destination")
 	if hdr == "" {
 		return http.StatusBadRequest, errInvalidDestination
@@ -614,7 +617,7 @@ func (h *Handler) handleLock(w http.ResponseWriter, r *http.Request) (retStatus 
 	return 0, nil
 }
 
-func (h *Handler) handleUnlock(w http.ResponseWriter, r *http.Request) (status int, err error) {
+func (h *Handler) handleUnlock(_ http.ResponseWriter, r *http.Request) (status int, err error) {
 	// http://www.webdav.org/specs/rfc4918.html#HEADER_Lock-Token says that the
 	// Lock-Token value is a Coded-URL. We strip its angle brackets.
 	t := r.Header.Get("Lock-Token")
@@ -772,7 +775,7 @@ func makePropstatResponse(href string, pstats []Propstat) *response {
 	return &resp
 }
 
-func handlePropfindError(err error, info os.FileInfo) error {
+func handlePropfindError(err error, _ os.FileInfo) error {
 	if errors.Is(err, os.ErrPermission) {
 		// If the server cannot recurse into a directory because it is not allowed,
 		// then there is nothing more to say about it. Just skip sending anything.
