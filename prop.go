@@ -252,9 +252,9 @@ func propnames(ctx context.Context, fs FileSystem, _ LockSystem, name string, fi
 			pnames = append(pnames, pn)
 		}
 	}
-	for pn := range deadProps {
+	/*for pn := range deadProps {
 		pnames = append(pnames, pn)
-	}
+	}*/
 	return pnames, nil
 }
 

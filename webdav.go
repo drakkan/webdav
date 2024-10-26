@@ -534,7 +534,8 @@ func (h *Handler) handleLock(w http.ResponseWriter, r *http.Request) (retStatus 
 	}
 
 	ctx := r.Context()
-	token, ld, now, created := "", LockDetails{}, time.Now(), false
+	var ld LockDetails
+	token, now, created := "", time.Now(), false
 	if li == (lockInfo{}) {
 		// An empty lockInfo means to refresh the lock.
 		ih, ok := parseIfHeader(r.Header.Get("If"))
