@@ -837,6 +837,8 @@ func walkFS(ctx context.Context, fs FileSystem, depth int, name string, info os.
 		return walkFn(name, info, err)
 	}
 	if fileLister, ok := f.(FileDirLister); ok {
+		defer f.Close()
+
 		lister, err := fileLister.ReadDir()
 		if err != nil {
 			return walkFn(name, info, err)
