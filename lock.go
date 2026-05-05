@@ -111,6 +111,9 @@ type LockSystem interface {
 	// It returns ErrNoSuchLock if no lock with the given name is found.
 	// This method is used for LOCK discovery
 	GetByName(name string) (string, time.Time, LockDetails, error)
+	// HasActiveLocks reports whether the LockSystem holds any non-expired
+	// locks at the given instant.
+	HasActiveLocks(now time.Time) bool
 }
 
 // LockDeleter extends a LockSystem to support deleting locks by file. This is
@@ -335,6 +338,13 @@ func (m *memLS) Delete(now time.Time, name string) error {
 
 	m.remove(n)
 	return nil
+}
+
+func (m *memLS) HasActiveLocks(now time.Time) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.collectExpiredNodes(now)
+	return len(m.byToken) > 0
 }
 
 func (m *memLS) GetByName(name string) (string, time.Time, LockDetails, error) {
