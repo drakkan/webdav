@@ -351,10 +351,19 @@ func (h *Handler) handleDelete(_ http.ResponseWriter, r *http.Request) (status i
 
 	// TODO: return MultiStatus where appropriate.
 
-	if err := h.FileSystem.RemoveAll(ctx, reqPath); err != nil {
+	// "godoc os RemoveAll" says that "If the path does not exist, RemoveAll
+	// returns nil (no error)." WebDAV semantics are that it should return a
+	// "404 Not Found". We therefore have to Stat before we RemoveAll.
+	if _, err := h.FileSystem.Stat(ctx, reqPath); err != nil {
 		if os.IsNotExist(err) {
 			return http.StatusNotFound, err
 		} else if os.IsPermission(err) {
+			return http.StatusForbidden, err
+		}
+		return http.StatusMethodNotAllowed, err
+	}
+	if err := h.FileSystem.RemoveAll(ctx, reqPath); err != nil {
+		if os.IsPermission(err) {
 			return http.StatusForbidden, err
 		}
 		return http.StatusMethodNotAllowed, err
