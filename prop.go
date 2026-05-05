@@ -66,16 +66,15 @@ type Propstat struct {
 	ResponseDescription string
 }
 
-// makePropstats returns a slice containing those of x and y whose Props slice
-// is non-empty. If both are empty, it returns a slice containing an otherwise
+// makePropstats returns a slice containing those of stats whose Props slice
+// is non-empty. If all are empty, it returns a slice containing an otherwise
 // zero Propstat whose HTTP status code is 200 OK.
-func makePropstats(x, y Propstat) []Propstat {
-	pstats := make([]Propstat, 0, 2)
-	if len(x.Props) != 0 {
-		pstats = append(pstats, x)
-	}
-	if len(y.Props) != 0 {
-		pstats = append(pstats, y)
+func makePropstats(stats ...Propstat) []Propstat {
+	pstats := make([]Propstat, 0, len(stats))
+	for _, stat := range stats {
+		if len(stat.Props) != 0 {
+			pstats = append(pstats, stat)
+		}
 	}
 	if len(pstats) == 0 {
 		pstats = append(pstats, Propstat{
@@ -202,6 +201,8 @@ func props(ctx context.Context, fs FileSystem, ls LockSystem, name string, pname
 
 	pstatOK := Propstat{Status: http.StatusOK}
 	pstatNotFound := Propstat{Status: http.StatusNotFound}
+	pstatForbidden := Propstat{Status: http.StatusForbidden}
+	pstatInternal := Propstat{Status: http.StatusInternalServerError}
 	for _, pn := range pnames {
 		// If this file has dead properties, check if they contain pn.
 		if dp, ok := deadProps[pn]; ok {
@@ -211,20 +212,27 @@ func props(ctx context.Context, fs FileSystem, ls LockSystem, name string, pname
 		// Otherwise, it must either be a live property or we don't know it.
 		if prop := liveProps[pn]; prop.findFn != nil && (prop.dir || !isDir) {
 			innerXML, err := prop.findFn(ctx, fs, ls, name, fi)
-			if err != nil {
-				return nil, err
+			if err == nil {
+				pstatOK.Props = append(pstatOK.Props, Property{
+					XMLName:  pn,
+					InnerXML: []byte(innerXML),
+				})
+			} else if errors.Is(err, os.ErrPermission) {
+				pstatForbidden.Props = append(pstatForbidden.Props, Property{
+					XMLName: pn,
+				})
+			} else {
+				pstatInternal.Props = append(pstatInternal.Props, Property{
+					XMLName: pn,
+				})
 			}
-			pstatOK.Props = append(pstatOK.Props, Property{
-				XMLName:  pn,
-				InnerXML: []byte(innerXML),
-			})
 		} else {
 			pstatNotFound.Props = append(pstatNotFound.Props, Property{
 				XMLName: pn,
 			})
 		}
 	}
-	return makePropstats(pstatOK, pstatNotFound), nil
+	return makePropstats(pstatOK, pstatNotFound, pstatForbidden, pstatInternal), nil
 }
 
 // propnames returns the property names defined for resource name.
