@@ -5,8 +5,13 @@
 package webdav
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"math/rand"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"path"
 	"reflect"
 	"sort"
@@ -731,5 +736,378 @@ func TestParseTimeout(t *testing.T) {
 		if got != tc.want || gotErr != tc.wantErr {
 			t.Errorf("parsing %q:\ngot  %v, %v\nwant %v, %v", tc.s, got, gotErr, tc.want, tc.wantErr)
 		}
+	}
+}
+
+func TestMemLSMaxLocks(t *testing.T) {
+	prev := maxLocksPerSystem
+	maxLocksPerSystem = 4
+	defer func() { maxLocksPerSystem = prev }()
+
+	now := time.Unix(0, 0)
+	m := NewMemLS()
+	for i := 0; i < maxLocksPerSystem; i++ {
+		_, err := m.Create(now, LockDetails{
+			Root:      fmt.Sprintf("/file_%d", i),
+			Duration:  time.Hour,
+			ZeroDepth: true,
+		})
+		if err != nil {
+			t.Fatalf("Create #%d: %v", i, err)
+		}
+	}
+	_, err := m.Create(now, LockDetails{
+		Root:      "/overflow",
+		Duration:  time.Hour,
+		ZeroDepth: true,
+	})
+	if err != ErrTooManyLocks {
+		t.Fatalf("Create at cap: got %v, want %v", err, ErrTooManyLocks)
+	}
+}
+
+func TestMemLSMaxLocksReclaimsExpired(t *testing.T) {
+	prev := maxLocksPerSystem
+	maxLocksPerSystem = 2
+	defer func() { maxLocksPerSystem = prev }()
+
+	now := time.Unix(0, 0)
+	m := NewMemLS()
+	for i := 0; i < maxLocksPerSystem; i++ {
+		if _, err := m.Create(now, LockDetails{
+			Root:      fmt.Sprintf("/short_%d", i),
+			Duration:  time.Second,
+			ZeroDepth: true,
+		}); err != nil {
+			t.Fatalf("Create #%d: %v", i, err)
+		}
+	}
+	// After expiry, the cap check must let new locks in: collectExpiredNodes
+	// runs before the cap test and frees the slots.
+	later := now.Add(2 * time.Second)
+	if _, err := m.Create(later, LockDetails{
+		Root:      "/fresh",
+		Duration:  time.Hour,
+		ZeroDepth: true,
+	}); err != nil {
+		t.Fatalf("Create after expiry: got %v, want nil", err)
+	}
+}
+
+const lockBody = `<?xml version="1.0" encoding="utf-8" ?>
+<D:lockinfo xmlns:D="DAV:">
+  <D:lockscope><D:exclusive/></D:lockscope>
+  <D:locktype><D:write/></D:locktype>
+  <D:owner><D:href>http://example.org/owner</D:href></D:owner>
+</D:lockinfo>`
+
+func newLockTestServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(&Handler{
+		FileSystem: NewMemFS(),
+		LockSystem: NewMemLS(),
+	})
+}
+
+func doLockRequest(t *testing.T, srv *httptest.Server, urlPath, body, timeout string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest("LOCK", srv.URL+urlPath, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	if timeout != "" {
+		req.Header.Set("Timeout", timeout)
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	return res
+}
+
+func TestHandleLockClampsInfiniteTimeout(t *testing.T) {
+	prev := maxLockDuration
+	maxLockDuration = 17 * time.Second
+	defer func() { maxLockDuration = prev }()
+
+	srv := newLockTestServer(t)
+	defer srv.Close()
+
+	res := doLockRequest(t, srv, "/file", lockBody, "Infinite")
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK && res.StatusCode != http.StatusCreated {
+		t.Fatalf("unexpected status: %d", res.StatusCode)
+	}
+	got, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	want := fmt.Sprintf("<D:timeout>Second-%d</D:timeout>", int(maxLockDuration/time.Second))
+	if !strings.Contains(string(got), want) {
+		t.Fatalf("response missing clamped timeout %q in:\n%s", want, got)
+	}
+}
+
+func TestHandleLockClampsExcessiveTimeout(t *testing.T) {
+	prev := maxLockDuration
+	maxLockDuration = 5 * time.Second
+	defer func() { maxLockDuration = prev }()
+
+	srv := newLockTestServer(t)
+	defer srv.Close()
+
+	res := doLockRequest(t, srv, "/file", lockBody, "Second-99999")
+	defer res.Body.Close()
+	got, _ := io.ReadAll(res.Body)
+	want := fmt.Sprintf("<D:timeout>Second-%d</D:timeout>", int(maxLockDuration/time.Second))
+	if !strings.Contains(string(got), want) {
+		t.Fatalf("response missing clamped timeout %q in:\n%s", want, got)
+	}
+}
+
+func TestHandleLockHonorsShortTimeout(t *testing.T) {
+	srv := newLockTestServer(t)
+	defer srv.Close()
+
+	res := doLockRequest(t, srv, "/file", lockBody, "Second-30")
+	defer res.Body.Close()
+	got, _ := io.ReadAll(res.Body)
+	if !strings.Contains(string(got), "<D:timeout>Second-30</D:timeout>") {
+		t.Fatalf("requested-shorter-than-max timeout was not honored:\n%s", got)
+	}
+}
+
+func TestHandleLockRefreshClampsTimeout(t *testing.T) {
+	prev := maxLockDuration
+	maxLockDuration = 9 * time.Second
+	defer func() { maxLockDuration = prev }()
+
+	srv := newLockTestServer(t)
+	defer srv.Close()
+
+	res := doLockRequest(t, srv, "/file", lockBody, "Second-5")
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK && res.StatusCode != http.StatusCreated {
+		t.Fatalf("LOCK status: %d", res.StatusCode)
+	}
+	token := res.Header.Get("Lock-Token")
+	if token == "" {
+		t.Fatalf("missing Lock-Token in LOCK response")
+	}
+
+	req, err := http.NewRequest("LOCK", srv.URL+"/file", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Timeout", "Infinite")
+	req.Header.Set("If", "("+token+")")
+	refresh, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Refresh Do: %v", err)
+	}
+	defer refresh.Body.Close()
+	got, _ := io.ReadAll(refresh.Body)
+	want := fmt.Sprintf("<D:timeout>Second-%d</D:timeout>", int(maxLockDuration/time.Second))
+	if !strings.Contains(string(got), want) {
+		t.Fatalf("refresh response missing clamped timeout %q in:\n%s", want, got)
+	}
+}
+
+func TestHandleLockBodyTooLarge(t *testing.T) {
+	prev := maxLockBodySize
+	maxLockBodySize = 256
+	defer func() { maxLockBodySize = prev }()
+
+	srv := newLockTestServer(t)
+	defer srv.Close()
+
+	huge := `<?xml version="1.0" encoding="utf-8" ?>
+<D:lockinfo xmlns:D="DAV:">
+  <D:lockscope><D:exclusive/></D:lockscope>
+  <D:locktype><D:write/></D:locktype>
+  <D:owner>` + strings.Repeat("A", int(maxLockBodySize)*4) + `</D:owner>
+</D:lockinfo>`
+
+	res := doLockRequest(t, srv, "/file", huge, "Second-30")
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("got status %d, want %d", res.StatusCode, http.StatusRequestEntityTooLarge)
+	}
+}
+
+func TestHandleLockTooManyLocks(t *testing.T) {
+	prevCap := maxLocksPerSystem
+	maxLocksPerSystem = 2
+	defer func() { maxLocksPerSystem = prevCap }()
+
+	srv := newLockTestServer(t)
+	defer srv.Close()
+
+	for i := 0; i < maxLocksPerSystem; i++ {
+		res := doLockRequest(t, srv, fmt.Sprintf("/file_%d", i), lockBody, "Second-3600")
+		res.Body.Close()
+		if res.StatusCode != http.StatusOK && res.StatusCode != http.StatusCreated {
+			t.Fatalf("LOCK #%d: got status %d", i, res.StatusCode)
+		}
+	}
+	res := doLockRequest(t, srv, "/file_overflow", lockBody, "Second-3600")
+	defer res.Body.Close()
+	if res.StatusCode != StatusInsufficientStorage {
+		t.Fatalf("LOCK overflow: got status %d, want %d", res.StatusCode, StatusInsufficientStorage)
+	}
+}
+
+func doMethodRequest(t *testing.T, srv *httptest.Server, method, urlPath, body string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(method, srv.URL+urlPath, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "text/xml; charset=utf-8")
+	if method == "PROPFIND" {
+		req.Header.Set("Depth", "0")
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	return res
+}
+
+func TestHandlePropfindAcceptsValidBody(t *testing.T) {
+	srv := newLockTestServer(t)
+	defer srv.Close()
+
+	body := `<?xml version="1.0" encoding="utf-8" ?>
+<D:propfind xmlns:D="DAV:"><D:allprop/></D:propfind>`
+	res := doMethodRequest(t, srv, "PROPFIND", "/", body)
+	defer res.Body.Close()
+	if res.StatusCode != StatusMulti {
+		t.Fatalf("PROPFIND: got status %d, want %d", res.StatusCode, StatusMulti)
+	}
+}
+
+func TestHandlePropfindBodyTooLarge(t *testing.T) {
+	prev := maxPropfindBodySize
+	maxPropfindBodySize = 256
+	defer func() { maxPropfindBodySize = prev }()
+
+	srv := newLockTestServer(t)
+	defer srv.Close()
+
+	huge := `<?xml version="1.0" encoding="utf-8" ?>
+<D:propfind xmlns:D="DAV:"><D:prop>` +
+		strings.Repeat(`<D:foo/>`, int(maxPropfindBodySize)) +
+		`</D:prop></D:propfind>`
+
+	res := doMethodRequest(t, srv, "PROPFIND", "/", huge)
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("PROPFIND: got status %d, want %d", res.StatusCode, http.StatusRequestEntityTooLarge)
+	}
+}
+
+func TestHandleProppatchBodyTooLarge(t *testing.T) {
+	prev := maxProppatchBodySize
+	maxProppatchBodySize = 256
+	defer func() { maxProppatchBodySize = prev }()
+
+	srv := newLockTestServer(t)
+	defer srv.Close()
+
+	// Create the target file via PUT (PROPPATCH requires the resource to
+	// exist and we don't want a lingering LOCK to make the response 423).
+	put, err := http.NewRequest("PUT", srv.URL+"/file", strings.NewReader("hi"))
+	if err != nil {
+		t.Fatalf("NewRequest PUT: %v", err)
+	}
+	pres, err := http.DefaultClient.Do(put)
+	if err != nil {
+		t.Fatalf("PUT: %v", err)
+	}
+	pres.Body.Close()
+
+	huge := `<?xml version="1.0" encoding="utf-8" ?>
+<D:propertyupdate xmlns:D="DAV:" xmlns:Z="http://example.org/"><D:set><D:prop>
+<Z:author>` + strings.Repeat("A", int(maxProppatchBodySize)*4) + `</Z:author>
+</D:prop></D:set></D:propertyupdate>`
+
+	res := doMethodRequest(t, srv, "PROPPATCH", "/file", huge)
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("PROPPATCH: got status %d, want %d", res.StatusCode, http.StatusRequestEntityTooLarge)
+	}
+}
+
+// recursiveDirFS is a minimal FileSystem whose root and every subdirectory
+// list a single child directory, producing an unbounded chain. It is used to
+// exercise the walkFS recursion guard.
+type recursiveDirFS struct{}
+
+func (recursiveDirFS) Mkdir(context.Context, string, os.FileMode) error {
+	return os.ErrPermission
+}
+func (recursiveDirFS) RemoveAll(context.Context, string) error { return os.ErrPermission }
+func (recursiveDirFS) Rename(context.Context, string, string) error {
+	return os.ErrPermission
+}
+func (recursiveDirFS) Stat(_ context.Context, name string) (os.FileInfo, error) {
+	return recursiveDirFI{name: path.Base(name)}, nil
+}
+func (recursiveDirFS) OpenFile(_ context.Context, name string, _ int, _ os.FileMode) (File, error) {
+	return &recursiveDirFile{name: name}, nil
+}
+
+type recursiveDirFI struct{ name string }
+
+func (f recursiveDirFI) Name() string     { return f.name }
+func (recursiveDirFI) Size() int64        { return 0 }
+func (recursiveDirFI) Mode() os.FileMode  { return os.ModeDir | 0755 }
+func (recursiveDirFI) ModTime() time.Time { return time.Unix(0, 0) }
+func (recursiveDirFI) IsDir() bool        { return true }
+func (recursiveDirFI) Sys() interface{}   { return nil }
+
+type recursiveDirFile struct {
+	name string
+	read bool
+}
+
+func (f *recursiveDirFile) Close() error { return nil }
+func (f *recursiveDirFile) Read([]byte) (int, error) {
+	return 0, io.EOF
+}
+func (f *recursiveDirFile) Seek(int64, int) (int64, error) { return 0, nil }
+func (f *recursiveDirFile) Stat() (os.FileInfo, error) {
+	return recursiveDirFI{name: path.Base(f.name)}, nil
+}
+func (f *recursiveDirFile) Write([]byte) (int, error) { return 0, os.ErrPermission }
+func (f *recursiveDirFile) Readdir(int) ([]os.FileInfo, error) {
+	if f.read {
+		return nil, io.EOF
+	}
+	f.read = true
+	return []os.FileInfo{recursiveDirFI{name: "child"}}, nil
+}
+
+func TestWalkFSRecursionGuard(t *testing.T) {
+	prev := maxWalkRecursion
+	maxWalkRecursion = 5
+	defer func() { maxWalkRecursion = prev }()
+
+	visited := 0
+	walkFn := func(_ string, _ os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		visited++
+		return nil
+	}
+	err := walkFS(context.Background(), recursiveDirFS{}, infiniteDepth, "/",
+		recursiveDirFI{name: "/"}, walkFn)
+	if err != errRecursionTooDeep {
+		t.Fatalf("got err %v, want %v", err, errRecursionTooDeep)
+	}
+	if visited != maxWalkRecursion {
+		t.Fatalf("visited %d nodes, want %d (the guard should fire on the next call)", visited, maxWalkRecursion)
 	}
 }

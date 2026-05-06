@@ -528,8 +528,20 @@ func (h *Handler) handleLock(w http.ResponseWriter, r *http.Request) (retStatus 
 	if err != nil {
 		return http.StatusBadRequest, err
 	}
+	// RFC 4918 §10.7 lets the server override the client-requested timeout.
+	// Clamp infinite or excessive durations to bound memory consumed by
+	// stale locks (the server still reports the granted timeout in the
+	// response body via writeLockInfo).
+	if duration < 0 || duration > maxLockDuration {
+		duration = maxLockDuration
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxLockBodySize)
 	li, status, err := readLockInfo(r.Body)
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			return http.StatusRequestEntityTooLarge, err
+		}
 		return status, err
 	}
 
@@ -582,6 +594,9 @@ func (h *Handler) handleLock(w http.ResponseWriter, r *http.Request) (retStatus 
 		if err != nil {
 			if err == ErrLocked {
 				return StatusLocked, err
+			}
+			if err == ErrTooManyLocks {
+				return StatusInsufficientStorage, err
 			}
 			return http.StatusInternalServerError, err
 		}
@@ -666,8 +681,13 @@ func (h *Handler) handlePropfind(w http.ResponseWriter, r *http.Request) (status
 	if depth == infiniteDepth {
 		return http.StatusForbidden, errors.New(`PROPFIND requests with a Depth of "infinity" are not allowed`)
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxPropfindBodySize)
 	pf, status, err := readPropfind(r.Body)
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			return http.StatusRequestEntityTooLarge, err
+		}
 		return status, err
 	}
 
@@ -736,8 +756,13 @@ func (h *Handler) handleProppatch(w http.ResponseWriter, r *http.Request) (statu
 		}
 		return http.StatusMethodNotAllowed, err
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxProppatchBodySize)
 	patches, status, err := readProppatch(r.Body)
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			return http.StatusRequestEntityTooLarge, err
+		}
 		return status, err
 	}
 	pstats, err := patch(ctx, h.FileSystem, h.LockSystem, reqPath, patches)

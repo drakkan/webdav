@@ -37,6 +37,47 @@ var (
 	ErrLocked = errors.New("webdav: locked")
 	// ErrNoSuchLock is returned by a LockSystem's Refresh and Unlock methods.
 	ErrNoSuchLock = errors.New("webdav: no such lock")
+	// ErrTooManyLocks is returned by a LockSystem's Create method when the
+	// system already holds the maximum number of allowed locks. The Handler
+	// maps this to a "507 Insufficient Storage" HTTP status.
+	ErrTooManyLocks = errors.New("webdav: too many locks")
+)
+
+// Per-package safety limits for the Handler and the bundled in-memory
+// LockSystem.
+//
+// RFC 4918 §10.7 explicitly allows the server to override the requested
+// lock timeout, and §11.5 defines 507 Insufficient Storage for the case
+// where the server cannot record a new lock.
+var (
+	// maxLockDuration caps the lifetime of any lock created or refreshed
+	// through the Handler. Requests asking for "Infinite" or a longer
+	// duration are silently clamped to this value.
+	maxLockDuration = time.Hour
+	// maxLocksPerSystem caps the number of concurrent locks held by the
+	// in-memory LockSystem returned by NewMemLS. Reaching this limit
+	// almost always indicates a client that fails to UNLOCK.
+	maxLocksPerSystem = 1024
+	// maxLockBodySize caps the size in bytes of a LOCK request body. The
+	// owner XML observed in real-world clients is well under 1 KiB; the
+	// 64 KiB ceiling matches the typical http.Server MaxHeaderBytes
+	// default and leaves ample headroom for unusual but legitimate clients.
+	maxLockBodySize int64 = 64 * 1024
+	// maxPropfindBodySize caps the size in bytes of a PROPFIND request
+	// body. Real clients send well under 4 KiB even when listing many
+	// properties with verbose namespace declarations.
+	maxPropfindBodySize int64 = 64 * 1024
+	// maxProppatchBodySize caps the size in bytes of a PROPPATCH request
+	// body. Each property's <prop> InnerXML is captured verbatim and may
+	// be persisted by FileSystem implementations that satisfy
+	// DeadPropsHolder, so an unbounded body would translate into
+	// unbounded persistent storage.
+	maxProppatchBodySize int64 = 64 * 1024
+	// maxWalkRecursion caps the recursion depth of walkFS. Mirrors the
+	// existing guard in copyFiles. The PROPFIND handler already rejects
+	// "Depth: infinity" upfront, so this is purely defensive against
+	// future callers and pathologically nested filesystems.
+	maxWalkRecursion = 1000
 )
 
 // Condition can match a WebDAV resource, based on a token or ETag.
@@ -271,6 +312,9 @@ func (m *memLS) Create(now time.Time, details LockDetails) (string, error) {
 	m.collectExpiredNodes(now)
 	details.Root = slashClean(details.Root)
 
+	if maxLocksPerSystem > 0 && len(m.byToken) >= maxLocksPerSystem {
+		return "", ErrTooManyLocks
+	}
 	if !m.canCreate(details.Root, details.ZeroDepth) {
 		return "", ErrLocked
 	}

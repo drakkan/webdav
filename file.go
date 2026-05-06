@@ -816,7 +816,16 @@ func copyFiles(ctx context.Context, fs FileSystem, src, dst string, overwrite bo
 // walkFS calls walkFn. If a visited file system node is a directory and
 // walkFn returns filepath.SkipDir, walkFS will skip traversal of this node.
 func walkFS(ctx context.Context, fs FileSystem, depth int, name string, info os.FileInfo, walkFn filepath.WalkFunc) error {
+	return walkFSRec(ctx, fs, depth, 0, name, info, walkFn)
+}
+
+func walkFSRec(ctx context.Context, fs FileSystem, depth, recursion int, name string, info os.FileInfo, walkFn filepath.WalkFunc) error {
 	// This implementation is based on Walk's code in the standard path/filepath package.
+	if recursion >= maxWalkRecursion {
+		return errRecursionTooDeep
+	}
+	recursion++
+
 	err := walkFn(name, info, nil)
 	if err != nil {
 		if err == filepath.SkipDir {
@@ -853,7 +862,7 @@ func walkFS(ctx context.Context, fs FileSystem, depth int, name string, info os.
 			}
 			for _, fileInfo := range batch {
 				filename := path.Join(name, fileInfo.Name())
-				err = walkFS(ctx, fs, depth, filename, fileInfo, walkFn)
+				err = walkFSRec(ctx, fs, depth, recursion, filename, fileInfo, walkFn)
 				if err != nil {
 					if err != filepath.SkipDir {
 						return err
@@ -874,7 +883,7 @@ func walkFS(ctx context.Context, fs FileSystem, depth int, name string, info os.
 
 	for _, fileInfo := range fileInfos {
 		filename := path.Join(name, fileInfo.Name())
-		err = walkFS(ctx, fs, depth, filename, fileInfo, walkFn)
+		err = walkFSRec(ctx, fs, depth, recursion, filename, fileInfo, walkFn)
 		if err != nil {
 			if err != filepath.SkipDir {
 				return err
