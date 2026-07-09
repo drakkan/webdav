@@ -82,6 +82,12 @@ type FileDirLister interface {
 	ReadDir() (DirLister, error)
 }
 
+// TransferErrorHandler is an optional interface invoked by the PUT handler
+// when the request body cannot be fully transferred.
+type TransferErrorHandler interface {
+	TransferError(err error)
+}
+
 // A Dir implements FileSystem using the native file system restricted to a
 // specific directory tree.
 //
