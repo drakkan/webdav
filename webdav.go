@@ -405,23 +405,19 @@ func (h *Handler) handlePut(w http.ResponseWriter, r *http.Request) (status int,
 			h.TransferError(copyErr)
 		}
 	}
-	fi, statErr := f.Stat()
 	closeErr := f.Close()
 	// TODO(rost): Returning 405 Method Not Allowed might not be appropriate.
 	if copyErr != nil {
 		return http.StatusMethodNotAllowed, copyErr
 	}
-	if statErr != nil {
-		return http.StatusMethodNotAllowed, statErr
-	}
 	if closeErr != nil {
 		return http.StatusMethodNotAllowed, closeErr
 	}
-	etag, err := findETag(ctx, h.FileSystem, h.LockSystem, reqPath, fi)
-	if err != nil {
-		return http.StatusInternalServerError, err
+	if fi, statErr := f.Stat(); statErr == nil {
+		if etag, etagErr := findETag(ctx, h.FileSystem, h.LockSystem, reqPath, fi); etagErr == nil && etag != "" {
+			w.Header().Set("ETag", etag)
+		}
 	}
-	w.Header().Set("ETag", etag)
 	return http.StatusCreated, nil
 }
 
