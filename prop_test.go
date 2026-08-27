@@ -305,6 +305,9 @@ func TestMemPS(t *testing.T) {
 			}},
 		}},
 	}, {
+		// Dead properties are accepted and stored by PROPPATCH, props and
+		// propnames do not read them back, so they are always reported as
+		// not found and never listed.
 		desc:    "proppatch dead property",
 		buildfs: []string{"mkdir /dir"},
 		propOp: []propOp{{
@@ -327,10 +330,9 @@ func TestMemPS(t *testing.T) {
 			name:   "/dir",
 			pnames: []xml.Name{{Space: "foo", Local: "bar"}},
 			wantPropstats: []Propstat{{
-				Status: http.StatusOK,
+				Status: http.StatusNotFound,
 				Props: []Property{{
-					XMLName:  xml.Name{Space: "foo", Local: "bar"},
-					InnerXML: []byte("baz"),
+					XMLName: xml.Name{Space: "foo", Local: "bar"},
 				}},
 			}},
 		}},
@@ -405,13 +407,11 @@ func TestMemPS(t *testing.T) {
 				{Space: "spam", Local: "ham"},
 			},
 			wantPropstats: []Propstat{{
-				Status: http.StatusOK,
+				Status: http.StatusNotFound,
 				Props: []Property{{
-					XMLName:  xml.Name{Space: "foo", Local: "bar"},
-					InnerXML: []byte("baz"),
+					XMLName: xml.Name{Space: "foo", Local: "bar"},
 				}, {
-					XMLName:  xml.Name{Space: "spam", Local: "ham"},
-					InnerXML: []byte("eggs"),
+					XMLName: xml.Name{Space: "spam", Local: "ham"},
 				}},
 			}},
 		}, {
@@ -440,12 +440,8 @@ func TestMemPS(t *testing.T) {
 				Status: http.StatusNotFound,
 				Props: []Property{{
 					XMLName: xml.Name{Space: "foo", Local: "bar"},
-				}},
-			}, {
-				Status: http.StatusOK,
-				Props: []Property{{
-					XMLName:  xml.Name{Space: "spam", Local: "ham"},
-					InnerXML: []byte("eggs"),
+				}, {
+					XMLName: xml.Name{Space: "spam", Local: "ham"},
 				}},
 			}},
 		}},
@@ -479,7 +475,6 @@ func TestMemPS(t *testing.T) {
 				{Space: "DAV:", Local: "lockdiscovery"},
 				{Space: "DAV:", Local: "getetag"},
 				{Space: "DAV:", Local: "supportedlock"},
-				{Space: "foo", Local: "bar"},
 			},
 		}},
 	}, {
