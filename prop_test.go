@@ -13,7 +13,9 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestMemPS(t *testing.T) {
@@ -571,6 +573,33 @@ func TestMemPS(t *testing.T) {
 				t.Errorf("%s: propstat\ngot  %q\nwant %q", desc, propstats, op.wantPropstats)
 			}
 		}
+	}
+}
+
+func TestLockRootEscaping(t *testing.T) {
+	const (
+		name = "/dir/a b%c&d.txt"
+		want = "<D:lockroot><D:href>/dir/a%20b%25c&amp;d.txt</D:href></D:lockroot>"
+	)
+	ls := NewMemLS()
+	ld := LockDetails{Root: name, Duration: time.Hour, ZeroDepth: true, OwnerXML: "owner"}
+	token, err := ls.Create(time.Now(), ld)
+	if err != nil {
+		t.Fatalf("Create: got error %v, want nil", err)
+	}
+	var lockInfo strings.Builder
+	if _, err := writeLockInfo(&lockInfo, token, ld); err != nil {
+		t.Fatalf("writeLockInfo: got error %v, want nil", err)
+	}
+	if got := lockInfo.String(); !strings.Contains(got, want) {
+		t.Errorf("LOCK response\ngot  %q\nwant it to contain %q", got, want)
+	}
+	got, err := findLockDiscovery(context.Background(), nil, ls, name, nil)
+	if err != nil {
+		t.Fatalf("findLockDiscovery: got error %v, want nil", err)
+	}
+	if !strings.Contains(got, want) {
+		t.Errorf("lockdiscovery\ngot  %q\nwant it to contain %q", got, want)
 	}
 }
 

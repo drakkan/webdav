@@ -27,6 +27,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -519,6 +520,7 @@ func findLockDiscovery(ctx context.Context, fs FileSystem, ls LockSystem, name s
 	} else {
 		timeout = fmt.Sprintf("Second-%d", time.Until(expiration)/time.Second)
 	}
+	root := (&url.URL{Path: ld.Root}).EscapedPath()
 	return fmt.Sprintf(
 		"<D:activelock>"+
 			"<D:locktype><D:write/></D:locktype>"+
@@ -529,6 +531,6 @@ func findLockDiscovery(ctx context.Context, fs FileSystem, ls LockSystem, name s
 			"<D:locktoken><D:href>%s</D:href></D:locktoken>"+
 			"<D:lockroot><D:href>%s</D:href></D:lockroot>"+
 			"</D:activelock>",
-		depth, ld.OwnerXML, timeout, escape(token), escape(ld.Root),
+		depth, ld.OwnerXML, timeout, escape(token), escape(root),
 	), nil
 }
