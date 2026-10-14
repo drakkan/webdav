@@ -518,3 +518,42 @@ func TestCopyMoveValidator(t *testing.T) {
 		t.Errorf("calls: got %v, want %v", fs.calls, want)
 	}
 }
+
+type dirCreatingFS struct {
+	FileSystem
+	calls []string
+}
+
+func (fs *dirCreatingFS) CreateCopyDir(ctx context.Context, srcRoot, dstRoot, srcDir, dstDir string, perm os.FileMode) error {
+	fs.calls = append(fs.calls, fmt.Sprintf("%s %s %s %s", srcRoot, dstRoot, srcDir, dstDir))
+	if srcDir == "/src/denied" {
+		return errors.New("denied")
+	}
+	return fs.Mkdir(ctx, dstDir, perm)
+}
+
+func TestCopyDirCreator(t *testing.T) {
+	ctx := context.Background()
+	fs := &dirCreatingFS{FileSystem: NewMemFS()}
+	for _, dir := range []string{"/src", "/src/a", "/src/a/b"} {
+		if err := fs.Mkdir(ctx, dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if status, err := copyFiles(ctx, fs, "/src", "/dst", true, infiniteDepth, 0); err != nil {
+		t.Fatalf("copy: status %d, err %v", status, err)
+	}
+	want := []string{"/src /dst /src/a /dst/a", "/src /dst /src/a/b /dst/a/b"}
+	if !reflect.DeepEqual(fs.calls, want) {
+		t.Errorf("calls: got %v, want %v", fs.calls, want)
+	}
+	if _, err := fs.Stat(ctx, "/dst/a/b"); err != nil {
+		t.Errorf("copied directory: %v", err)
+	}
+	if err := fs.Mkdir(ctx, "/src/denied", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if status, err := copyFiles(ctx, fs, "/src", "/dst2", true, infiniteDepth, 0); err == nil || status != http.StatusForbidden {
+		t.Errorf("refused copy: status %d, err %v", status, err)
+	}
+}

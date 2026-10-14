@@ -95,6 +95,13 @@ type CopyMoveValidator interface {
 	ValidateCopyMove(ctx context.Context, src, dst string, isMove bool) error
 }
 
+// CopyDirCreator is an optional FileSystem interface used by a recursive COPY
+// from srcRoot to dstRoot, in place of Mkdir. A non-nil error stops the copy
+// with 403 Forbidden.
+type CopyDirCreator interface {
+	CreateCopyDir(ctx context.Context, srcRoot, dstRoot, srcDir, dstDir string, perm os.FileMode) error
+}
+
 // A Dir implements FileSystem using the native file system restricted to a
 // specific directory tree.
 //
@@ -700,6 +707,12 @@ func copyProps(dst, src File) error {
 //
 // See section 9.8.5 for when various HTTP status codes apply.
 func copyFiles(ctx context.Context, fs FileSystem, src, dst string, overwrite bool, depth int, recursion int) (status int, err error) {
+	return copyTree(ctx, fs, src, dst, src, dst, overwrite, depth, recursion)
+}
+
+func copyTree(ctx context.Context, fs FileSystem, srcRoot, dstRoot, src, dst string, overwrite bool, depth int,
+	recursion int,
+) (status int, err error) {
 	if recursion == 1000 {
 		return http.StatusInternalServerError, errRecursionTooDeep
 	}
@@ -746,7 +759,12 @@ func copyFiles(ctx context.Context, fs FileSystem, src, dst string, overwrite bo
 	}
 
 	if srcStat.IsDir() {
-		if err := fs.Mkdir(ctx, dst, srcPerm); err != nil {
+		if c, ok := fs.(CopyDirCreator); ok && recursion > 1 {
+			err = c.CreateCopyDir(ctx, srcRoot, dstRoot, src, dst, srcPerm)
+		} else {
+			err = fs.Mkdir(ctx, dst, srcPerm)
+		}
+		if err != nil {
 			return http.StatusForbidden, err
 		}
 		if depth == infiniteDepth {
@@ -770,7 +788,7 @@ func copyFiles(ctx context.Context, fs FileSystem, src, dst string, overwrite bo
 						name := c.Name()
 						s := path.Join(src, name)
 						d := path.Join(dst, name)
-						cStatus, cErr := copyFiles(ctx, fs, s, d, overwrite, depth, recursion)
+						cStatus, cErr := copyTree(ctx, fs, srcRoot, dstRoot, s, d, overwrite, depth, recursion)
 						if cErr != nil {
 							// TODO: MultiStatus.
 							return cStatus, cErr
@@ -792,7 +810,7 @@ func copyFiles(ctx context.Context, fs FileSystem, src, dst string, overwrite bo
 					name := c.Name()
 					s := path.Join(src, name)
 					d := path.Join(dst, name)
-					cStatus, cErr := copyFiles(ctx, fs, s, d, overwrite, depth, recursion)
+					cStatus, cErr := copyTree(ctx, fs, srcRoot, dstRoot, s, d, overwrite, depth, recursion)
 					if cErr != nil {
 						// TODO: MultiStatus.
 						return cStatus, cErr
