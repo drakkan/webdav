@@ -480,6 +480,12 @@ func (h *Handler) handleCopyMove(_ http.ResponseWriter, r *http.Request) (status
 
 	ctx := r.Context()
 
+	if v, ok := h.FileSystem.(CopyMoveValidator); ok {
+		if err := v.ValidateCopyMove(ctx, src, dst, r.Method != "COPY"); err != nil {
+			return http.StatusForbidden, err
+		}
+	}
+
 	if r.Method == "COPY" {
 		// Section 7.5.1 says that a COPY only needs to lock the destination,
 		// not both destination and source. Strictly speaking, this is racy,

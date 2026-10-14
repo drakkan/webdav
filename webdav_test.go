@@ -455,3 +455,66 @@ func TestDelete(t *testing.T) {
 		}
 	}
 }
+
+type validatingFS struct {
+	FileSystem
+	calls []string
+}
+
+func (fs *validatingFS) ValidateCopyMove(_ context.Context, src, dst string, isMove bool) error {
+	fs.calls = append(fs.calls, fmt.Sprintf("%s %s %t", src, dst, isMove))
+	if dst == "/denied" {
+		return errors.New("denied")
+	}
+	return nil
+}
+
+func TestCopyMoveValidator(t *testing.T) {
+	fs := &validatingFS{FileSystem: NewMemFS()}
+	srv := httptest.NewServer(&Handler{
+		FileSystem: fs,
+		LockSystem: NewMemLS(),
+	})
+	defer srv.Close()
+
+	do := func(method, urlStr string, headers ...string) int {
+		req, err := http.NewRequest(method, srv.URL+urlStr, strings.NewReader("content"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for len(headers) >= 2 {
+			req.Header.Add(headers[0], headers[1])
+			headers = headers[2:]
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		_, _ = io.ReadAll(res.Body)
+		return res.StatusCode
+	}
+
+	if got := do("PUT", "/a"); got != http.StatusCreated {
+		t.Fatalf("PUT: got %d", got)
+	}
+	if got := do("COPY", "/a", "Destination", srv.URL+"/denied"); got != http.StatusForbidden {
+		t.Errorf("COPY refused: got %d, want %d", got, http.StatusForbidden)
+	}
+	if got := do("MOVE", "/a", "Destination", srv.URL+"/denied"); got != http.StatusForbidden {
+		t.Errorf("MOVE refused: got %d, want %d", got, http.StatusForbidden)
+	}
+	if _, err := fs.Stat(context.Background(), "/denied"); !os.IsNotExist(err) {
+		t.Errorf("a refused destination must not exist, stat error: %v", err)
+	}
+	if got := do("COPY", "/a", "Destination", srv.URL+"/b"); got != http.StatusCreated {
+		t.Errorf("COPY: got %d, want %d", got, http.StatusCreated)
+	}
+	if got := do("MOVE", "/a", "Destination", srv.URL+"/c"); got != http.StatusCreated {
+		t.Errorf("MOVE: got %d, want %d", got, http.StatusCreated)
+	}
+	want := []string{"/a /denied false", "/a /denied true", "/a /b false", "/a /c true"}
+	if !reflect.DeepEqual(fs.calls, want) {
+		t.Errorf("calls: got %v, want %v", fs.calls, want)
+	}
+}

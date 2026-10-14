@@ -88,6 +88,13 @@ type TransferErrorHandler interface {
 	TransferError(err error)
 }
 
+// CopyMoveValidator is an optional FileSystem interface invoked by the COPY and
+// MOVE handlers before anything is changed. A non-nil error refuses the request
+// with 403 Forbidden.
+type CopyMoveValidator interface {
+	ValidateCopyMove(ctx context.Context, src, dst string, isMove bool) error
+}
+
 // A Dir implements FileSystem using the native file system restricted to a
 // specific directory tree.
 //
@@ -757,6 +764,9 @@ func copyFiles(ctx context.Context, fs FileSystem, src, dst string, overwrite bo
 						return http.StatusForbidden, err
 					}
 					for _, c := range children {
+						if !isCopyable(c) {
+							continue
+						}
 						name := c.Name()
 						s := path.Join(src, name)
 						d := path.Join(dst, name)
@@ -776,6 +786,9 @@ func copyFiles(ctx context.Context, fs FileSystem, src, dst string, overwrite bo
 					return http.StatusForbidden, err
 				}
 				for _, c := range children {
+					if !isCopyable(c) {
+						continue
+					}
 					name := c.Name()
 					s := path.Join(src, name)
 					d := path.Join(dst, name)
@@ -814,6 +827,10 @@ func copyFiles(ctx context.Context, fs FileSystem, src, dst string, overwrite bo
 		return http.StatusCreated, nil
 	}
 	return http.StatusNoContent, nil
+}
+
+func isCopyable(fi os.FileInfo) bool {
+	return fi.IsDir() || fi.Mode().IsRegular()
 }
 
 // walkFS traverses filesystem fs starting at name up to depth levels.
